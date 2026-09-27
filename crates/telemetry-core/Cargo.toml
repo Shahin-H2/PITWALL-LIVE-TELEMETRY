@@ -1,0 +1,7 @@
+[package]
+name = "telemetry-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bytemuck.workspace = true

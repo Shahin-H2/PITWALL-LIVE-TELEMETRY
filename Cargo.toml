@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/telemetry-core",
+    "crates/telemetry-analysis",
+    "crates/pitwall",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+
+[workspace.dependencies]
+bytemuck = { version = "1.16", features = ["derive"] }
+
+# Release profile tuned for latency, not throughput.
+# codegen-units=1 + fat LTO gives the optimizer whole-program view of the
+# hot decode path. panic=abort removes unwind tables from the frame path.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# A profile for profiling: release codegen, but keep symbols.
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = true

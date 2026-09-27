@@ -1,0 +1,7 @@
+[package]
+name = "telemetry-analysis"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+telemetry-core = { path = "../telemetry-core" }

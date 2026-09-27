@@ -1,0 +1,6 @@
+/target
+/output
+captures/*.pwtl
+captures/*.json
+!captures/example.pwtl
+.DS_Store

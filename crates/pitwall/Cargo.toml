@@ -1,0 +1,17 @@
+[package]
+name = "pitwall"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+telemetry-core = { path = "../telemetry-core" }
+telemetry-analysis = { path = "../telemetry-analysis" }
+bytemuck.workspace = true
+wgpu = "30.0.1"
+winit = "0.30.13"
+pollster = "1.0.1"
+cpal = "0.18.2"
+png = "0.18.1"
+
+[dev-dependencies]
+naga = "30.0.1"
