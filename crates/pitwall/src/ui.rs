@@ -9,6 +9,7 @@
 use crate::anim::{Pulse, Reconstructor, Smoothed, Spring};
 use crate::font;
 use telemetry_core::sample::{FieldMask, SimId, TelemetrySample};
+use telemetry_core::session::{SessionState, StripFrame};
 
 pub const SHAPE_GLASS: f32 = 0.0;
 pub const SHAPE_FILL: f32 = 1.0;
@@ -16,6 +17,7 @@ pub const SHAPE_ARC: f32 = 2.0;
 pub const SHAPE_GLYPH: f32 = 3.0;
 pub const SHAPE_CIRCLE: f32 = 4.0;
 pub const SHAPE_RING: f32 = 5.0;
+pub const SHAPE_SEG: f32 = 6.0;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -53,6 +55,9 @@ impl Default for Reveal {
 pub struct DrawList {
     pub instances: Vec<Instance>,
     reveal: Reveal,
+    /// Characters drawn this frame that the atlas does not carry, and which
+    /// therefore rendered as `?`. Should always be zero; a test asserts it.
+    pub unrenderable: usize,
 }
 
 /// Palette. Kept in one place so the whole cluster stays coherent — a
@@ -72,12 +77,21 @@ pub mod col {
     pub const TRACK: [f32; 4] = [1.0, 1.0, 1.0, 0.09];
     pub const OVERSTEER: [f32; 4] = [1.00, 0.45, 0.25, 1.0];
     pub const UNDERSTEER: [f32; 4] = [0.35, 0.62, 1.00, 1.0];
+    /// Pedal overlap: the one thing on the strip chart that is a warning
+    /// rather than a reading, so it gets a colour nothing else uses.
+    pub const OVERLAP: [f32; 4] = [1.00, 0.85, 0.30, 1.0];
+
+    /// Same hue, reduced alpha — for trace fills under a bright stroke.
+    pub const fn faded(c: [f32; 4], a: f32) -> [f32; 4] {
+        [c[0], c[1], c[2], a]
+    }
 }
 
 impl DrawList {
     pub fn clear(&mut self) {
         self.instances.clear();
         self.reveal = Reveal::default();
+        self.unrenderable = 0;
     }
 
     /// Apply `alpha`, a pixel `offset`, and a `scale` about `pivot` to
@@ -105,6 +119,19 @@ impl DrawList {
             i.rect[1] = rv.pivot.1 + (i.rect[1] - rv.pivot.1) * rv.scale;
             i.rect[2] *= rv.scale;
             i.rect[3] *= rv.scale;
+            // Some shapes carry lengths in `params` that the rect does not
+            // describe — a corner radius, a stroke width, a segment's length.
+            // Scaling the quad without them would leave a shrinking panel with
+            // full-size corners, or a shrinking trace with a full-size pen.
+            match i.meta[0] {
+                SHAPE_GLASS | SHAPE_FILL => i.params[0] *= rv.scale,
+                SHAPE_ARC | SHAPE_RING => i.params[3] *= rv.scale,
+                SHAPE_SEG => {
+                    i.params[0] *= rv.scale;
+                    i.params[3] *= rv.scale;
+                }
+                _ => {}
+            }
         }
         i.rect[0] += rv.offset.0;
         i.rect[1] += rv.offset.1;
@@ -185,6 +212,44 @@ impl DrawList {
         });
     }
 
+    /// A straight stroke of constant width with round caps.
+    ///
+    /// The instance rect is the segment's axis-aligned bounding box; the shader
+    /// recovers the capsule from the direction and length in `params`. That
+    /// keeps a trace at one instance per point instead of the six vertices a
+    /// triangulated ribbon would need, and keeps the antialiasing analytic.
+    pub fn segment(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, thickness: f32, color: [f32; 4]) {
+        let dx = x1 - x0;
+        let dy = y1 - y0;
+        let len = (dx * dx + dy * dy).sqrt();
+        if len < 1e-4 {
+            // Degenerate: a zero-length capsule is a disc, so draw one rather
+            // than feeding the shader a direction it cannot normalise.
+            self.circle(x0, y0, thickness * 0.5, color);
+            return;
+        }
+        let w = dx.abs() + thickness;
+        let h = dy.abs() + thickness;
+        self.push(Instance {
+            rect: [
+                (x0 + x1) * 0.5 - w * 0.5,
+                (y0 + y1) * 0.5 - h * 0.5,
+                w,
+                h,
+            ],
+            color,
+            params: [thickness, dx / len, dy / len, len],
+            meta: [SHAPE_SEG, 0.0, 0.0, 0.0],
+        });
+    }
+
+    /// A connected run of segments. Round caps make the joints invisible.
+    pub fn polyline(&mut self, pts: &[(f32, f32)], thickness: f32, color: [f32; 4]) {
+        for w in pts.windows(2) {
+            self.segment(w[0].0, w[0].1, w[1].0, w[1].1, thickness, color);
+        }
+    }
+
     /// Draw a string. `size` is the cap height; `x, y` is the top-left of the
     /// first glyph's ink. Returns the advance width so callers can chain.
     pub fn text(&mut self, x: f32, y: f32, size: f32, color: [f32; 4], s: &str) -> f32 {
@@ -209,6 +274,9 @@ impl DrawList {
         let m = font::metrics(size);
         let mut cx = x;
         for ch in s.chars() {
+            if !font::is_renderable(ch) {
+                self.unrenderable += 1;
+            }
             if ch != ' ' {
                 self.push(Instance {
                     // The quad is the whole atlas cell, padding included —
@@ -284,10 +352,11 @@ pub enum PanelId {
     Pedals = 3,
     GForce = 4,
     Balance = 5,
-    FrameTime = 6,
+    Strip = 6,
+    FrameTime = 7,
 }
 
-pub const PANEL_COUNT: usize = 7;
+pub const PANEL_COUNT: usize = 8;
 
 impl PanelId {
     pub const ALL: [PanelId; PANEL_COUNT] = [
@@ -297,6 +366,7 @@ impl PanelId {
         PanelId::Pedals,
         PanelId::GForce,
         PanelId::Balance,
+        PanelId::Strip,
         PanelId::FrameTime,
     ];
     #[inline]
@@ -314,7 +384,8 @@ impl PanelId {
             PanelId::Pedals => 0.27,
             PanelId::GForce => 0.34,
             PanelId::Balance => 0.41,
-            PanelId::FrameTime => 0.48,
+            PanelId::Strip => 0.46,
+            PanelId::FrameTime => 0.52,
         }
     }
 }
@@ -339,7 +410,10 @@ pub struct Layout {
     pub pedals: Rect,
     pub gforce: Rect,
     pub balance: Rect,
+    pub strip: Rect,
     pub frame_time: Rect,
+    /// Where the key hints sit, clear of the bottom instrument band.
+    pub hint: (f32, f32),
 }
 
 impl Layout {
@@ -380,8 +454,23 @@ impl Layout {
             h: 76.0 * s,
         };
 
+        // A bottom band shared by the frame-time histogram and the rolling
+        // pedal chart. The histogram stays small — it is diagnostics — and the
+        // chart takes the rest of the width, because a strip chart is only
+        // legible if it is wide: the x axis is time, and squeezing it squeezes
+        // the very transitions it exists to show.
+        let band_h = 108.0 * s;
+        let band_y = h - pad - band_h;
+        let ft_w = w * 0.20;
         let ft_h = 54.0 * s;
-        let frame_time = Rect { x: pad, y: h - pad - ft_h, w: w * 0.26, h: ft_h };
+        let frame_time = Rect { x: pad, y: band_y + band_h - ft_h, w: ft_w, h: ft_h };
+        let gap = 18.0 * s;
+        let strip = Rect {
+            x: pad + ft_w + gap,
+            y: band_y,
+            w: (w - pad * 2.0 - ft_w - gap).max(40.0),
+            h: band_h,
+        };
 
         Self {
             s,
@@ -394,7 +483,9 @@ impl Layout {
             pedals,
             gforce,
             balance,
+            strip,
             frame_time,
+            hint: (pad, band_y - 18.0 * s),
         }
     }
 
@@ -406,6 +497,7 @@ impl Layout {
             PanelId::Pedals => self.pedals,
             PanelId::GForce => self.gforce,
             PanelId::Balance => self.balance,
+            PanelId::Strip => self.strip,
             PanelId::FrameTime => self.frame_time,
         }
     }
@@ -602,6 +694,10 @@ pub struct Dash {
 
     pub frame_history: Vec<f32>,
     pub last_gear: i8,
+    /// Seconds the dashboard has been live. Drives idle animation — the
+    /// recording blink, the strip-chart cursor — that must keep time even when
+    /// the telemetry stream goes quiet.
+    pub clock: f32,
 }
 
 impl Default for Dash {
@@ -630,6 +726,7 @@ impl Dash {
             speed_recon: Reconstructor::new(0.018),
             frame_history: Vec::with_capacity(240),
             last_gear: 0,
+            clock: 0.0,
         }
     }
 
@@ -706,6 +803,8 @@ impl Dash {
         self.gear_display = s.gear;
         self.gear_flash = (self.gear_flash - dt * 4.0).max(0.0);
 
+        self.clock += dt;
+
         self.frame_history.push(dt * 1000.0);
         if self.frame_history.len() > 240 {
             self.frame_history.remove(0);
@@ -720,6 +819,19 @@ impl Dash {
     pub fn hover_of(&self, id: PanelId) -> f32 {
         self.hover[id.idx()].value.clamp(0.0, 1.4)
     }
+}
+
+/// Group a count with thin separators, so 148203 reads at a glance.
+pub fn thousands(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn gear_label(g: i8) -> String {
@@ -812,20 +924,39 @@ pub fn build_standby(dl: &mut DrawList, ign: &Ignition, w: f32, h: f32, sim: Sim
 // The dashboard
 // ============================================================================
 
+/// Everything the dashboard reads that is not animation state.
+///
+/// Bundled rather than passed as ten positional arguments: the draw code is
+/// called from the frame loop, from the screenshot path, and from tests, and a
+/// long positional signature is how those three drift apart.
+pub struct FrameInput<'a> {
+    pub sample: &'a TelemetrySample,
+    /// The rolling pedal window, straight off the logger thread.
+    pub strip: &'a StripFrame,
+    pub sim: SimId,
+    pub pkt_rate: f32,
+    pub pinned: bool,
+    pub session: SessionState,
+    /// Samples in the current recording.
+    pub logged: u64,
+    /// Samples lost between the ingest and logger threads. Should be zero.
+    pub lost: u64,
+}
+
 /// Build a full frame's draw list.
-#[allow(clippy::too_many_arguments)]
 pub fn build(
     dl: &mut DrawList,
     dash: &Dash,
     lay: &Layout,
     ign: &Ignition,
-    sample: &TelemetrySample,
-    sim: SimId,
     w: f32,
     h: f32,
-    pkt_rate: f32,
-    pinned: bool,
+    input: &FrameInput,
 ) {
+    let sample = input.sample;
+    let sim = input.sim;
+    let pkt_rate = input.pkt_rate;
+    let pinned = input.pinned;
     if ign.phase == Phase::Standby {
         return;
     }
@@ -865,13 +996,43 @@ pub fn build(
             "PINNED",
         );
     }
-    dl.text_right(
-        r.x + r.w - 20.0 * s,
-        r.y + r.h * 0.5 - 6.0 * s,
-        12.0 * s,
-        col::TEXT_DIM,
-        &format!("{:.0} PKT/S", pkt_rate),
-    );
+    // Right-hand status, laid out right to left: packet rate, then the
+    // recording badge. The badge is the loudest thing in the bar when it is
+    // live, because "am I recording?" is the one question a trackside engineer
+    // must never have to guess at.
+    let mut rx = r.x + r.w - 20.0 * s;
+    let rate = format!("{:.0} PKT/S", pkt_rate);
+    dl.text_right(rx, r.y + r.h * 0.5 - 6.0 * s, 12.0 * s, col::TEXT_DIM, &rate);
+    rx -= DrawList::text_width(12.0 * s, &rate) + 22.0 * s;
+
+    let (badge_col, badge) = match input.session {
+        SessionState::Recording => (
+            col::BRAKE,
+            format!("REC  {}", thousands(input.logged)),
+        ),
+        SessionState::Complete => (col::ACCENT, "SESSION ENDED".to_string()),
+        SessionState::Idle => (col::TEXT_DIM, "ARMED".to_string()),
+    };
+    dl.text_right(rx, r.y + r.h * 0.5 - 6.0 * s, 12.0 * s, badge_col, &badge);
+    rx -= DrawList::text_width(12.0 * s, &badge) + 12.0 * s;
+    if input.session == SessionState::Recording {
+        // A steady dot would read as an indicator light; a pulsing one reads as
+        // a tape running.
+        let blink = 0.45 + 0.55 * (dash.clock * 2.6).sin().abs();
+        dl.circle(rx, r.y + r.h * 0.5, 4.0 * s, col::faded(col::BRAKE, blink));
+        rx -= 16.0 * s;
+    }
+    if input.lost > 0 {
+        // Never expected. If it happens the driver should see it immediately
+        // rather than discover a gap in the log after the session.
+        dl.text_right(
+            rx,
+            r.y + r.h * 0.5 - 6.0 * s,
+            12.0 * s,
+            col::WARN,
+            &format!("{} LOST", input.lost),
+        );
+    }
 
     // ================= tachometer =================
     let r = lay.tach;
@@ -1043,6 +1204,12 @@ pub fn build(
         dl.text_centered(r.x + r.w * 0.5, r.y + r.h - 20.0 * s, 10.0 * s, col::TEXT_DIM, "NO SLIP DATA");
     }
 
+    // ================= rolling pedal strip chart =================
+    let r = lay.strip;
+    enter(dl, PanelId::Strip, r);
+    glass_panel(dl, r, 14.0 * s, col::GLASS, dash.hover_of(PanelId::Strip));
+    strip_chart(dl, r, s, input.strip, dash.clock);
+
     // ================= frame-time histogram =================
     // Permanently on screen, not behind a debug flag. The entire architecture
     // is a bet on frame consistency; if that bet is ever lost, it should be
@@ -1093,16 +1260,179 @@ pub fn build(
     }
 
     // ================= hint bar =================
-    let k = ign.stage(0.55, 0.4);
+    let k = ign.stage(0.58, 0.4);
     dl.set_reveal(k, (0.0, 0.0), 1.0, (0.0, 0.0));
     dl.text(
-        w * 0.52,
-        h - pad - 16.0 * s,
+        lay.hint.0,
+        lay.hint.1,
         11.0 * s,
         col::TEXT_DIM,
-        "TAB SWITCH SIM   P PIN   R RECORD   ESC QUIT",
+        "TAB SIM   P PIN   R NEW SESSION   E END SESSION   ESC QUIT",
     );
     dl.clear_reveal();
+    let _ = (w, h, pad);
+}
+
+/// The live rolling pedal trace.
+///
+/// A strip chart, not a gauge: the pedal bars next to it already answer "how
+/// much throttle right now", and this answers the question they cannot — "what
+/// did I just do with my feet". Two things are only visible in the time domain:
+///
+/// * **Brake release trails.** A trace that steps off the brake is a driver
+///   releasing in one motion; one that tapers is trail-braking. The bar shows
+///   neither, because by the time you look the release has happened.
+/// * **Pedal overlap.** Throttle and brake applied together is almost always a
+///   mistake and almost never noticed, so where the two envelopes coincide the
+///   chart marks it explicitly rather than leaving the driver to spot it.
+///
+/// Drawn from the decimated envelope the logger publishes, so the cost here is
+/// a fixed ~1000 instances regardless of whether the sim sends at 60 Hz or
+/// 300 Hz, and no history is walked on the render thread.
+fn strip_chart(dl: &mut DrawList, r: Rect, s: f32, frame: &StripFrame, clock: f32) {
+    let head_h = 21.0 * s;
+    let foot_h = 15.0 * s;
+    let pad_x = 14.0 * s;
+    let plot = Rect {
+        x: r.x + pad_x,
+        y: r.y + head_h + 5.0 * s,
+        w: r.w - pad_x * 2.0,
+        h: (r.h - head_h - foot_h - 9.0 * s).max(10.0),
+    };
+
+    let title = "PEDAL TRACE";
+    dl.text(r.x + pad_x, r.y + 7.0 * s, 10.0 * s, col::TEXT_DIM, title);
+
+    // Legend, so the two colours never need explaining. Positioned off the
+    // measured width of the title rather than a guessed constant — the two
+    // collide at some scale factor otherwise, and it will not be this one.
+    let mut lx = r.x + pad_x + DrawList::text_width(10.0 * s, title) + 20.0 * s;
+    for (c, label) in [(col::THROTTLE, "THR"), (col::BRAKE, "BRK")] {
+        dl.fill(lx, r.y + 11.0 * s, 9.0 * s, 2.5 * s, 1.2 * s, c);
+        dl.text(lx + 13.0 * s, r.y + 7.0 * s, 10.0 * s, col::TEXT_DIM, label);
+        lx += 46.0 * s;
+    }
+
+    let span = if frame.window_s > 0.0 { frame.window_s } else { 0.0 };
+    dl.text_right(
+        r.x + r.w - pad_x,
+        r.y + 7.0 * s,
+        10.0 * s,
+        col::TEXT_DIM,
+        &format!("{span:.0}s WINDOW"),
+    );
+
+    // Gridlines at each quarter. The 100% line is brighter: it is the only one
+    // a driver is actually trying to reach.
+    for q in 0..=4 {
+        let f = q as f32 / 4.0;
+        let y = plot.y + plot.h * (1.0 - f);
+        let c = if q == 4 { col::faded(col::TEXT_DIM, 0.22) } else { col::TRACK };
+        dl.fill(plot.x, y - 0.5 * s, plot.w, 1.0 * s, 0.0, c);
+    }
+
+    let n = frame.len();
+    if n < 2 {
+        dl.text_centered(
+            plot.x + plot.w * 0.5,
+            plot.y + plot.h * 0.5 - 6.0 * s,
+            11.0 * s,
+            col::TEXT_DIM,
+            "AWAITING PEDAL DATA",
+        );
+        return;
+    }
+
+    // Columns are laid out right-aligned, so the newest sample is always hard
+    // against the right edge and the trace scrolls leftward off the panel. A
+    // left-aligned chart that grows rightward would move the driver's point of
+    // interest every frame until the window filled.
+    let cw = plot.w / StripFrame::CAPACITY as f32;
+    let x_of = |i: usize| plot.x + plot.w - (n - i) as f32 * cw;
+    let y_of = |v: f32| plot.y + plot.h * (1.0 - v.clamp(0.0, 1.0));
+
+    let mut thr_line: Vec<(f32, f32)> = Vec::with_capacity(n);
+    let mut brk_line: Vec<(f32, f32)> = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let Some(c) = frame.column(i) else { continue };
+        let x = x_of(i);
+        let bw = (cw + 0.6 * s).max(0.8);
+
+        // Area under each envelope, then the envelope band itself a shade
+        // brighter. The band is what carries the decimation honestly: where a
+        // column contains both a release and a re-application, you see the
+        // whole range rather than an average of the two.
+        for (v_min, v_max, c_base) in [
+            (c.thr_min, c.thr_max, col::THROTTLE),
+            (c.brk_min, c.brk_max, col::BRAKE),
+        ] {
+            if v_max <= 0.002 {
+                continue;
+            }
+            let top = y_of(v_max);
+            dl.fill(x, top, bw, plot.y + plot.h - top, 0.0, col::faded(c_base, 0.20));
+            let bot = y_of(v_min);
+            if bot - top > 1.0 {
+                dl.fill(x, top, bw, bot - top, 0.0, col::faded(c_base, 0.34));
+            }
+        }
+
+        thr_line.push((x + cw * 0.5, y_of(c.thr_max)));
+        brk_line.push((x + cw * 0.5, y_of(c.brk_max)));
+
+        // Overlap: a tick at the top of the plot, its brightness the share of
+        // the column spent with both pedals down.
+        if c.overlap > 0.0 {
+            dl.fill(
+                x,
+                plot.y - 1.0 * s,
+                bw,
+                4.0 * s,
+                0.0,
+                col::faded(col::OVERLAP, 0.35 + 0.65 * c.overlap),
+            );
+        }
+    }
+
+    dl.polyline(&thr_line, 1.7 * s, col::THROTTLE);
+    dl.polyline(&brk_line, 1.7 * s, col::BRAKE);
+
+    // The now-cursor. Pulsed so it reads as live rather than as a static rule.
+    let pulse = 0.45 + 0.55 * (clock * 3.0).sin().abs();
+    dl.fill(
+        plot.x + plot.w - 1.0 * s,
+        plot.y,
+        1.6 * s,
+        plot.h,
+        0.0,
+        col::faded(col::TEXT, 0.25 + 0.2 * pulse),
+    );
+
+    let foot_y = plot.y + plot.h + 4.0 * s;
+    if frame.overlap_columns > 0 {
+        dl.text_right(r.x + r.w - pad_x, foot_y, 10.0 * s, col::OVERLAP, "PEDAL OVERLAP");
+    }
+    dl.text(
+        plot.x,
+        foot_y,
+        9.5 * s,
+        col::TEXT_DIM,
+        if frame.samples == 0 {
+            "HOLDING - NO SAMPLES IN WINDOW"
+        } else {
+            "OLDEST"
+        },
+    );
+    if frame.samples > 0 {
+        dl.text_right(
+            plot.x + plot.w,
+            foot_y,
+            9.5 * s,
+            col::TEXT_DIM,
+            if frame.overlap_columns > 0 { "" } else { "NOW" },
+        );
+    }
 }
 
 /// A glass panel whose rim and refraction respond to hover.
@@ -1159,6 +1489,35 @@ mod tests {
 
     fn live() -> Ignition {
         Ignition { phase: Phase::Live, t: 1.0, standby_t: 0.0 }
+    }
+
+    fn input<'a>(s: &'a TelemetrySample, strip: &'a StripFrame, sim: SimId) -> FrameInput<'a> {
+        FrameInput {
+            sample: s,
+            strip,
+            sim,
+            pkt_rate: 60.0,
+            pinned: false,
+            session: SessionState::Recording,
+            logged: 12_345,
+            lost: 0,
+        }
+    }
+
+    /// A chart with real content: a ramp on the throttle and a brake stab.
+    fn strip_fixture() -> StripFrame {
+        let mut v = Vec::new();
+        for i in 0..800u64 {
+            let ph = i as f32 / 800.0;
+            v.push(TelemetrySample {
+                t_capture_ns: i * 10_000_000,
+                present: FieldMask::THROTTLE | FieldMask::BRAKE,
+                throttle: if ph > 0.55 { 1.0 - (ph - 0.55) } else { ph * 1.6 },
+                brake: if (0.5..0.62).contains(&ph) { 0.9 } else { 0.0 },
+                ..Default::default()
+            });
+        }
+        telemetry_core::session::strip_from_samples(&v, 8.0)
     }
 
     // ---- layout -----------------------------------------------------------
@@ -1355,7 +1714,8 @@ mod tests {
         let (dash, s) = dash_with_sample();
         let l = Layout::new(1600.0, 900.0);
         let mut dl = DrawList::default();
-        build(&mut dl, &dash, &l, &Ignition::default(), &s, SimId::Forza, 1600.0, 900.0, 60.0, false);
+        let sf = strip_fixture();
+        build(&mut dl, &dash, &l, &Ignition::default(), 1600.0, 900.0, &input(&s, &sf, SimId::Forza));
         assert!(dl.instances.is_empty());
     }
 
@@ -1364,10 +1724,11 @@ mod tests {
         let (dash, s) = dash_with_sample();
         let l = Layout::new(1600.0, 900.0);
         let mut dl = DrawList::default();
-        build(&mut dl, &dash, &l, &live(), &s, SimId::F1_25, 1600.0, 900.0, 60.0, true);
+        let sf = strip_fixture();
+        build(&mut dl, &dash, &l, &live(), 1600.0, 900.0, &input(&s, &sf, SimId::F1_25));
         assert!(dl.instances.len() > 60, "got {}", dl.instances.len());
         for i in &dl.instances {
-            assert!((0.0..=5.0).contains(&i.meta[0]), "bad shape tag {}", i.meta[0]);
+            assert!((0.0..=SHAPE_SEG).contains(&i.meta[0]), "bad shape tag {}", i.meta[0]);
             assert!(i.rect.iter().all(|v| v.is_finite()), "non-finite rect {:?}", i.rect);
             assert!(i.rect[2] >= 0.0 && i.rect[3] >= 0.0, "negative size {:?}", i.rect);
             assert!(i.color.iter().all(|v| v.is_finite()));
@@ -1377,10 +1738,11 @@ mod tests {
     #[test]
     fn layout_survives_absurd_window_sizes() {
         let (dash, s) = dash_with_sample();
+        let sf = strip_fixture();
         for (w, h) in [(320.0, 240.0), (7680.0, 4320.0), (100.0, 3000.0), (3000.0, 100.0)] {
             let l = Layout::new(w, h);
             let mut dl = DrawList::default();
-            build(&mut dl, &dash, &l, &live(), &s, SimId::Forza, w, h, 60.0, false);
+            build(&mut dl, &dash, &l, &live(), w, h, &input(&s, &sf, SimId::Forza));
             for i in &dl.instances {
                 assert!(i.rect.iter().all(|v| v.is_finite()), "{w}x{h} produced NaN");
             }
@@ -1398,13 +1760,29 @@ mod tests {
         assert!(dash.hover_of(PanelId::GForce) < 0.05, "unrelated panel is hovered");
 
         let mut dl = DrawList::default();
-        build(&mut dl, &dash, &l, &live(), &s, SimId::Forza, 1600.0, 900.0, 60.0, false);
+        let sf = strip_fixture();
+        build(&mut dl, &dash, &l, &live(), 1600.0, 900.0, &input(&s, &sf, SimId::Forza));
         let hovered_glass = dl
             .instances
             .iter()
             .filter(|i| i.meta[0] == SHAPE_GLASS && i.meta[2] > 0.5)
             .count();
         assert_eq!(hovered_glass, 1, "exactly one panel should carry hover");
+    }
+
+    #[test]
+    fn every_character_the_dashboard_draws_exists_in_the_atlas() {
+        // The atlas stops at 'Z'. An arrow, a degree sign or a plus-minus in a
+        // label silently becomes a question mark on screen, which is the kind
+        // of defect only a screenshot catches — so catch it here instead.
+        let (dash, s) = dash_with_sample();
+        let l = Layout::new(1600.0, 900.0);
+        let sf = strip_fixture();
+        let mut dl = DrawList::default();
+        dl.clear();
+        build_standby(&mut dl, &Ignition::default(), 1600.0, 900.0, SimId::AssettoCorsa, false);
+        build(&mut dl, &dash, &l, &live(), 1600.0, 900.0, &input(&s, &sf, SimId::F1_25));
+        assert_eq!(dl.unrenderable, 0, "{} characters fell back to '?'", dl.unrenderable);
     }
 
     #[test]
