@@ -7,6 +7,7 @@
 
 pub mod advice;
 pub mod corner;
+pub mod debrief;
 pub mod gearing;
 pub mod style;
 

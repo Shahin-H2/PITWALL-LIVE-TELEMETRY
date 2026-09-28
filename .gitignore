@@ -1,5 +1,7 @@
 /target
 /output
+/.venv
+__pycache__/
 captures/*.pwtl
 captures/*.json
 !captures/example.pwtl

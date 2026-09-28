@@ -24,6 +24,7 @@ pub mod record;
 pub mod registry;
 pub mod ring;
 pub mod sample;
+pub mod session;
 
 pub use registry::{DetectionMode, Registry};
 pub use sample::{FieldMask, SimId, TelemetrySample, Vec3, Wheel};
