@@ -1,23 +1,17 @@
-//! Physics-informed setup recommendations.
+//! Algorithmic setup analyzer: physics-informed setup recommendations.
 //!
-//! # Why this file exists instead of "just ask the model"
+//! # Why this is a rule layer and not a fitted one
 //!
-//! A language model asked to produce a car setup from raw telemetry will
-//! produce confident, fluent, plausible numbers. Some of them will be wrong,
-//! and nothing about the output will indicate which. That is unacceptable when
-//! the output is a change the driver makes to a car before a session.
+//! A setup change is something the driver makes to a car before they go out on
+//! it. A recommendation that is confident, fluent and wrong is worse than no
+//! recommendation at all, and a statistical fit over this little data gives you
+//! exactly that — plausible numbers with nothing in the output to say which of
+//! them are trustworthy.
 //!
-//! So the division of labour is:
-//!
-//! * **This module decides what changes and in which direction.** It is a
-//!   deterministic rule layer over measured symptoms, and every recommendation
-//!   carries the measurement that produced it. It runs offline, instantly, and
-//!   the same input always gives the same output.
-//! * **The model explains, prioritises, and adapts the wording** to the driver
-//!   and the track, given these recommendations as input.
-//!
-//! The model never invents a number. If the LLM layer is unavailable, this
-//! module still produces the complete, correct advice — just less eloquently.
+//! So every recommendation here is produced by an explicit rule over a measured
+//! symptom, and carries that measurement with it. It runs offline, instantly,
+//! and the same input always gives the same output. When the evidence is weak,
+//! the rule says so in [`Confidence`] rather than rounding up to certainty.
 //!
 //! The causal relationships encoded below are standard vehicle dynamics:
 //! stiffening an anti-roll bar transfers more lateral load across that axle
@@ -99,8 +93,9 @@ pub enum Magnitude {
 /// How much we trust this recommendation.
 ///
 /// Reported honestly: `Low` means the symptom was present but weak, or the
-/// evidence came from few corners. It is shown in the UI and passed to the
-/// model, so nothing downstream can silently promote a guess into a fact.
+/// evidence came from few corners. It travels with the recommendation all the
+/// way to the screen, so nothing downstream can silently promote a guess into
+/// a fact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Confidence {
     Low,
