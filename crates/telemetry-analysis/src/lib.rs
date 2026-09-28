@@ -1,9 +1,13 @@
-//! Deterministic telemetry analysis: corner segmentation, driver fingerprint,
-//! gearing, and physics-informed setup advice.
+//! Heuristic vehicle dynamics engine.
 //!
-//! Nothing in this crate calls a network or a model. Everything here is
+//! Corner segmentation, driver fingerprinting, gearing analysis, the end-of-
+//! session debrief, and physics-informed setup recommendations.
+//!
+//! Nothing in this crate opens a socket or fits a parameter. Everything here is
 //! reproducible arithmetic over recorded samples, which is what makes it
-//! trustworthy enough to put in front of a driver.
+//! trustworthy enough to put in front of a driver: the same lap always yields
+//! the same verdict, and every verdict can be traced back to the corner that
+//! produced it.
 
 pub mod advice;
 pub mod corner;
