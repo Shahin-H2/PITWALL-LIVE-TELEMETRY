@@ -1,10 +1,9 @@
 //! Corner segmentation and per-corner driver metrics.
 //!
-//! Everything in this module is deterministic arithmetic. No model, no
-//! inference, no API call. That is the point: these numbers are *measured*,
-//! and they are what the language model is later asked to reason about. If the
-//! LLM layer were deleted tomorrow, this file would still produce actionable
-//! setup advice.
+//! Everything in this module is deterministic arithmetic. No inference, no
+//! network, no fitted parameters. That is the point: these numbers are
+//! *measured*, and every recommendation the setup analyzer makes traces back to
+//! one of them. A driver can be shown the corner that produced the advice.
 
 use telemetry_core::sample::{FieldMask, TelemetrySample};
 
