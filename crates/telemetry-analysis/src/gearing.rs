@@ -3,8 +3,8 @@
 //! Of every recommendation this app can make, gearing is the one that is
 //! closest to objectively correct, because it barely involves the driver at
 //! all. Whether the car hits the limiter 300 m before the braking zone is a
-//! measurable fact, not a matter of feel. So we compute it exactly and let the
-//! language model explain it rather than derive it.
+//! measurable fact, not a matter of feel, so it is computed exactly rather than
+//! estimated.
 
 use telemetry_core::sample::{FieldMask, TelemetrySample};
 
@@ -38,8 +38,8 @@ pub struct GearingReport {
     pub top_gear_used: i8,
     /// Peak RPM reached in that gear as a fraction of redline.
     pub top_gear_peak_fraction: f32,
-    /// RPM histogram, 32 buckets from idle to redline. Feeds the UI plot and
-    /// gives the model a compact picture of where the engine actually lives.
+    /// RPM histogram, 32 buckets from idle to redline. Feeds the UI plot, and
+    /// is the compact picture of where the engine actually spends its time.
     pub rpm_histogram: [f32; 32],
     pub verdict: GearingVerdict,
 }
@@ -61,8 +61,8 @@ pub enum GearingVerdict {
 }
 
 impl GearingReport {
-    /// A one-line human summary. The LLM layer gets the structured data, but
-    /// the UI wants a sentence.
+    /// A one-line human summary. The structured fields above are what the
+    /// report and the JSON export carry; the UI wants a sentence.
     pub fn headline(&self) -> String {
         match &self.verdict {
             GearingVerdict::InsufficientData => {
