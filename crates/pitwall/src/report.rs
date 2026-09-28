@@ -3,12 +3,14 @@
 //! Two outputs from one pass:
 //!
 //! * a human-readable report on stdout, for the driver;
-//! * a compact JSON document, which is what the AI tuning engineer consumes.
+//! * a compact JSON document, for external tooling — a spreadsheet, a team's
+//!   own database, a setup sheet generator.
 //!
-//! The JSON is deliberately *small* — a few hundred tokens of extracted
-//! features, not raw telemetry. Feeding a model 60 Hz × 90 s of samples would
-//! be expensive, slow, and worse: the model would be doing signal processing
-//! in its head, badly, when [`telemetry_analysis`] has already done it exactly.
+//! The JSON is deliberately *small*: extracted features, not raw telemetry.
+//! Anything downstream wanting to compare two sessions wants the conclusions
+//! and the evidence behind them, not 60 Hz x 90 s of samples it would have to
+//! re-derive them from. The raw samples are already in the `.pwtl` capture for
+//! anyone who does want them.
 
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -61,7 +63,6 @@ pub fn analyse_capture(
         let mut f = std::fs::File::create(out)?;
         f.write_all(json.as_bytes())?;
         println!("\n[json] wrote {} bytes to {out}", json.len());
-        println!("[json] feed this to the tuning engineer:  python3 ai/tune_engineer.py {out}");
     }
     Ok(())
 }
@@ -267,9 +268,9 @@ fn to_json(a: &LapAnalysis, sim: SimId, samples: &[TelemetrySample]) -> String {
     }
     j.push_str("  ],\n");
 
-    // ---- deterministic recommendations ------------------------------------
-    // These are the *physics layer's* conclusions. The model receives them as
-    // established fact and is explicitly instructed not to invent others.
+    // ---- recommendations ---------------------------------------------------
+    // Each one carries the measurement that produced it, so a consumer of this
+    // document can always show the evidence rather than just the verdict.
     j.push_str("  \"physics_recommendations\": [\n");
     for (i, r) in a.advice.recommendations.iter().enumerate() {
         let comma = if i + 1 < a.advice.recommendations.len() { "," } else { "" };
