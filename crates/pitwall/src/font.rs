@@ -256,6 +256,18 @@ pub fn build_atlas() -> Vec<u8> {
 }
 
 /// Map a character to its atlas index, folding lowercase and substituting '?'.
+/// Whether the atlas carries this character.
+///
+/// The atlas is the printable ASCII range up to `Z` — digits, capitals and
+/// punctuation, which is every character an instrument cluster needs. Anything
+/// else draws as `?`, which is how a stray `→` or `±` in a label turns into a
+/// question mark on screen. [`DrawList`](crate::ui::DrawList) counts the
+/// substitutions so a test can catch it instead of a screenshot.
+pub fn is_renderable(c: char) -> bool {
+    let up = c.to_ascii_uppercase() as u32;
+    (32..=90).contains(&up)
+}
+
 pub fn glyph_index(c: char) -> f32 {
     let up = c.to_ascii_uppercase() as u32;
     if (32..=90).contains(&up) {

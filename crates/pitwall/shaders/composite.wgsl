@@ -49,6 +49,7 @@ const SHAPE_ARC: f32    = 2.0;
 const SHAPE_GLYPH: f32  = 3.0;
 const SHAPE_CIRCLE: f32 = 4.0;
 const SHAPE_RING: f32   = 5.0;
+const SHAPE_SEG: f32    = 6.0;
 
 const TAU: f32 = 6.28318530718;
 
@@ -206,6 +207,22 @@ fn fs_main(v: VsOut) -> @location(0) vec4<f32> {
                       * (1.0 - smoothstep(span - feather, span + feather, rel));
             cov = cov * sweep;
         }
+        if (cov < 0.003) { discard; }
+        return vec4<f32>(v.color.rgb, v.color.a * cov);
+    }
+
+    // ---- line segments ----------------------------------------------------
+    // A capsule: distance to a finite line, minus half the pen width. Constant
+    // width by construction and round-capped, which is what lets a chain of
+    // them read as one continuous stroke — a polyline built from rectangles
+    // shows a notch at every joint, and one built from overlapping discs pulses
+    // in width along its length.
+    if (shape == SHAPE_SEG) {
+        let dir = normalize(v.params.yz + vec2<f32>(1e-6, 0.0));
+        let half_len = v.params.w * 0.5;
+        let t = clamp(dot(v.local, dir), -half_len, half_len);
+        let d = length(v.local - dir * t) - v.params.x * 0.5;
+        let cov = aa(d);
         if (cov < 0.003) { discard; }
         return vec4<f32>(v.color.rgb, v.color.a * cov);
     }
