@@ -4,7 +4,7 @@ Live racing telemetry, session recording and setup analysis for **Forza**,
 **F1 25**, and **Assetto Corsa**. Rust, GPU-rendered, no garbage collector
 anywhere in the frame path.
 
-<img src="welcomeScreen.png" width="70%"> 
+<img src="welcomeScreen.png" width="65%"> 
 
 ```
 crates/telemetry-core       UDP ingest, protocol decoders, lock-free transport,
@@ -15,9 +15,6 @@ crates/pitwall              the application: wgpu renderer, audio, CLI
 tools/fake_sim.py           synthetic packet source, all three protocols
 legacy/                     the original C and Python prototypes (engine.c bug fixed)
 ```
-
-<img src="liveTelemtry.png" width="100%"> 
-<img src="sessionDebrief.png" width="100%"> 
 
 ## Quick start
 
@@ -33,6 +30,8 @@ cargo run --release -p pitwall
 
 `--sim f1` and `--sim ac` speak the other two protocols. The app auto-detects
 which; you never tell it.
+
+<img src="liveTelemtry.png" width="90%"> 
 
 ## Against a real sim
 
@@ -118,6 +117,8 @@ The debrief window carries:
 Pedal channels are decimated by peak and motion channels by mean, because a
 30 ms brake stab is the whole story in one and noise in the other. Anything a
 simulator does not publish is reported as `--`, never as a plausible zero.
+
+<img src="sessionDebrief.png" width="100%"> 
 
 ## Record, replay, analyse
 
