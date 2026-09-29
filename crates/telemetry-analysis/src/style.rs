@@ -11,10 +11,10 @@
 //! to be fast. Recommending one car for both is how generic setup guides make
 //! people slower.
 //!
-//! Deliberately not a neural network. These are ~10 interpretable scalars over
-//! a handful of corners; k-means over this feature space would already be
-//! overkill, and a model would sacrifice the explainability that makes the
-//! advice trustworthy.
+//! Deliberately not a fitted classifier. These are ~10 interpretable scalars
+//! over a handful of corners; k-means over this feature space would already be
+//! overkill, and anything heavier would trade away the explainability that is
+//! the only reason a driver would act on the advice.
 
 use crate::corner::Corner;
 
