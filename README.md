@@ -61,7 +61,7 @@ UDP socket
    │  telemetry-ingest thread        recv → stamp → raw capture → decode
    ├──► TripleBuffer<TelemetrySample>   latest-wins  ──► render: gauges, numerals
    └──► SpscRing<TelemetrySample>       lossy FIFO   ──► telemetry-logger
-                                                            │
+                                                             │
    telemetry-logger thread                                   │
      drain the ring in bounded batches                       │
      ├─ append to SessionLog        (chunked circular arena)
