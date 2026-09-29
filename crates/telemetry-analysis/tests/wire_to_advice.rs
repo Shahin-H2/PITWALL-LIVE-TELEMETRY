@@ -13,7 +13,7 @@
 
 use telemetry_analysis::advice::{Direction, Parameter};
 use telemetry_analysis::analyse_lap;
-use telemetry_core::protocols::{assetto, forza};
+use telemetry_core::protocols::assetto;
 use telemetry_core::registry::Registry;
 use telemetry_core::sample::{SimId, TelemetrySample, Wheel};
 
