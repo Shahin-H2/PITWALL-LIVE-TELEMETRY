@@ -4,6 +4,8 @@ Live racing telemetry, session recording and setup analysis for **Forza**,
 **F1 25**, and **Assetto Corsa**. Rust, GPU-rendered, no garbage collector
 anywhere in the frame path.
 
+<img src="welcomeScreen.png" width="70%"> 
+
 ```
 crates/telemetry-core       UDP ingest, protocol decoders, lock-free transport,
                             session logging, capture/replay
@@ -14,9 +16,8 @@ tools/fake_sim.py           synthetic packet source, all three protocols
 legacy/                     the original C and Python prototypes (engine.c bug fixed)
 ```
 
-<img src="welcomeScreen.png" width="58%"> 
-<img src="liveTelemtry.png" width="40%"> 
-<img src="sessionDebrief.png" width="40%"> 
+<img src="liveTelemtry.png" width="100%"> 
+<img src="sessionDebrief.png" width="100%"> 
 
 ## Quick start
 
