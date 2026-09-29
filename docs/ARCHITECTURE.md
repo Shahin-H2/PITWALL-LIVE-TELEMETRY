@@ -44,8 +44,8 @@ needle into a stutter, and a driver reads that as a broken instrument.
               │    4. decode via the protocol registry
               │    5. publish
               │
-              ├─→ TripleBuffer<TelemetrySample>  ──→ render thread (latest-wins)
-              └─→ SpscRing<TelemetrySample>      ──→ analysis   (lossy FIFO)
+              ├─→ TripleBuffer<TelemetrySample>  ──→ render thread   (latest-wins)
+              └─→ SpscRing<TelemetrySample>      ──→ logger thread  (lossy FIFO)
 ```
 
 Two structures because gauges and traces want opposite things. A tachometer
@@ -53,6 +53,10 @@ does not care about the sample it missed 8 ms ago; a trace graph needs every
 sample in order. Neither ever takes a lock — a mutex here would let a 12 µs
 network stall become a dropped frame, which is the exact jitter this design
 exists to avoid.
+
+The logger thread is the ring's only consumer, and everything that follows from
+it — the session log, the rolling pedal chart, the debrief — is described under
+[Session recording](#session-recording).
 
 ## Protocol identification
 
@@ -270,10 +274,89 @@ Sounds are synthesised rather than sampled: no assets, no decoder dependency,
 no licensing, and they can be tuned by editing a curve. For UI feedback an
 envelope over an oscillator is all you need.
 
+## Session recording
+
+Two stages on two threads. The ingest thread exists to empty the socket and
+must never do anything that could make it late, so it stamps, decodes,
+publishes, and hands every sample straight on over a lock-free ring. The logger
+thread owns everything expensive.
+
+```
+UDP socket
+   │  telemetry-ingest thread        recv -> stamp -> raw capture -> decode
+   ├──► TripleBuffer<TelemetrySample>   latest-wins  ──► render: gauges
+   └──► SpscRing<TelemetrySample>       lossy FIFO   ──► telemetry-logger
+                                                            │
+   telemetry-logger thread                                   │
+     drain the ring in bounded batches                       │
+     ├─ append to SessionLog          (chunked circular arena)
+     ├─ fold into the strip decimator (min/max per time bin)
+     │      └──► TripleBuffer<StripFrame> ─────────► render: rolling chart
+     └─ on `end()`, hand the log over ────────────► session-debrief thread
+```
+
+**The render thread never waits.** Per frame: one atomic swap for the newest
+`StripFrame`, one `try_lock` to see whether a finished session is available.
+`try_lock` and not `lock` — losing the race means collecting the log 16 ms
+later, which nobody can perceive, and that is a far better trade than the
+possibility of a frame waiting on the logger.
+
+**The arena never moves its contents.** `Vec<TelemetrySample>` doubling at a
+million samples is a ~300 MB memcpy and a 2x memory spike, in the middle of a
+session. `SessionLog` is a deque of fixed 4096-sample chunks; once
+`max_chunks` are live the oldest is recycled to hold the newest samples. So a
+long session loses its *beginning*, which for a driving session is the right
+thing to lose, and after warm-up the logger does not allocate at all.
+
+**The chart is decimated by envelope, not by sampling.** Each column holds the
+min and max of its ~31 ms time bin. One sample per column would alias: a 25 ms
+brake stab would vanish or flicker depending on where it fell. Min/max means a
+transient can be widened to one column but never lost — the same guarantee a
+professional trace gives you, and the reason the chart can be trusted to show
+pedal overlap. A bin with no samples repeats the previous value rather than
+dropping to zero, because "the pedal did not move" is the truth and a gap would
+read as a fault in the app.
+
+Bin boundaries come from a monotonic clock, and the target index is computed
+from elapsed time rather than incremented per wake-up. The logger wakes on a
+jittery ~1.5 ms timer; deriving the index keeps the column width exact anyway.
+
+## The debrief
+
+Modal over the cluster rather than a second OS window. A second window means a
+second surface, a second swap chain, and a compositor deciding when each of
+them presents — and the whole latency argument rests on owning exactly one
+present path.
+
+The analysis runs on a worker thread. Even at a few tens of milliseconds it has
+no business on the render thread: the modal is animating open while it runs,
+and a stutter in that animation is exactly what makes software feel cheap. The
+window opens in a working state and fills in when the result lands.
+
+**Traces are aligned by distance, not by time.** Two laps plotted against time
+diverge immediately and cannot be compared; against distance, the same corner
+is at the same x on every lap. Where the simulator publishes lap distance it is
+used directly; otherwise distance is integrated from speed, and the window says
+which of the two it did.
+
+**Pedal channels decimate by peak, motion channels by mean.** Speed and
+longitudinal g are smooth, so averaging a 13 m bin is faithful. Throttle and
+brake are effectively switched signals where a 30 ms stab is the whole story,
+and averaging one into a bin erases it.
+
+Sector splits are three equal distances, not the circuit's real markers: no UDP
+protocol here publishes those consistently, and equal thirds at least compare
+like-for-like between laps of the same session.
+
+Maximum braking force is qualified — measured only while the brake is applied
+and the car is above 5 m/s. Unqualified, the figure reports the impact at the
+end of the session rather than the driver's best stop.
+
 ## The analysis layer
 
-Deterministic arithmetic. No model, no network. If the LLM layer were deleted
-this would still produce actionable setup advice.
+A heuristic vehicle dynamics engine: deterministic arithmetic, no network, no
+fitted parameters. The same lap always yields the same verdict, and every
+verdict traces back to the corner that produced it.
 
 - **Corner segmentation** from smoothed lateral load, with hysteresis so a
   mid-corner dip doesn't split one corner into two.
@@ -301,15 +384,20 @@ Stated plainly rather than left to be discovered:
 - **The ACC shared-memory bridge.** Design sketched above; not implemented.
 - **Live sim pinning from the UI.** `Tab`/`P` drive the replay registry; the
   live ingest thread owns its own registry and needs a control channel.
-- **The AI layer is untested against the live API** — there were no credentials
-  on the build machine. The request shape follows the current SDK
-  (`claude-opus-5`, adaptive thinking, `output_config.format`, prompt caching)
-  and every failure path falls back to the offline report, but the happy path
-  has not been exercised end to end.
-- **Track maps, delta timing, lap comparison.** The capture format and the
-  analysis layer support them; nothing draws them yet.
-- **Hover is visual only.** Panels light up but nothing is clickable yet; there
-  is no drill-down, no panel focus, no reordering.
+- **Track maps and delta timing.** The capture format and the analysis layer
+  support both; nothing draws them yet.
+- **Lap-over-lap overlay.** The debrief aligns the fastest complete lap by
+  distance, which is the hard half of the problem, but only draws one lap. A
+  second trace per plot is the obvious next step.
+- **Dashboard hover is visual only.** Panels light up but nothing on the
+  cluster is clickable; there is no drill-down, no panel focus, no reordering.
+  The debrief's close control is the only interactive element in the app.
+- **Sector splits are equal distances, not the circuit's own sectors.** They
+  compare laps within a session correctly and cannot be compared against a
+  leaderboard.
+- **No disk format for sessions.** `.pwtl` captures the wire bytes, and the
+  debrief is computed from memory. A session that has been ended and closed is
+  gone unless `--record` was also on.
 - **A CoreAudio underrun is still reported once at stream start** on macOS.
   cpal reports the device's supported buffer range as unknown there, so the
   explicit 256-frame request falls through to the device default. It is a
