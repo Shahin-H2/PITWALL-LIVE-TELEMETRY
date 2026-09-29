@@ -4,7 +4,7 @@ Live racing telemetry, session recording and setup analysis for **Forza**,
 **F1 25**, and **Assetto Corsa**. Rust, GPU-rendered, no garbage collector
 anywhere in the frame path.
 
-<img src="welcomeScreen.png" width="65%"> 
+<img src="welcomeScreen.png" width="100%"> 
 
 ```
 crates/telemetry-core       UDP ingest, protocol decoders, lock-free transport,
