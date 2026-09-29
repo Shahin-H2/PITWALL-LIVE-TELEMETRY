@@ -311,9 +311,11 @@ const OVERLAP_THRESHOLD: f32 = 0.04;
 impl Decimator {
     fn new(window_s: f32) -> Self {
         let bin_s = (window_s as f64 / STRIP_COLUMNS as f64).max(1e-4);
-        let mut frame = StripFrame::default();
-        frame.window_s = window_s;
-        frame.bin_s = bin_s as f32;
+        let frame = StripFrame {
+            window_s,
+            bin_s: bin_s as f32,
+            ..Default::default()
+        };
         Self {
             frame,
             bin_s,
@@ -425,6 +427,50 @@ impl Decimator {
         }
         self.frame.overlap_columns = n;
     }
+}
+
+/// Fold a recorded sample slice into a [`StripFrame`] exactly as the logger
+/// would, keeping the last `window_s` of it.
+///
+/// Bins on the samples' own capture timestamps rather than on a wall clock, so a
+/// given capture always yields the same chart. The live path deliberately does
+/// the opposite — it bins on a monotonic clock — because it has to keep
+/// scrolling when nothing is arriving. This exists for the headless screenshot
+/// path and for tests: without it the strip chart would be the one panel no
+/// picture could ever show.
+pub fn strip_from_samples(samples: &[TelemetrySample], window_s: f32) -> StripFrame {
+    let mut dec = Decimator::new(window_s);
+    if samples.is_empty() {
+        return dec.frame;
+    }
+
+    let t_end = samples[samples.len() - 1].t_capture_ns;
+    let span_ns = (window_s as f64 * 1e9) as u64;
+    let t_start = t_end.saturating_sub(span_ns);
+    let bin_ns = (dec.bin_s * 1e9) as u64;
+    let stamped = t_end != samples[0].t_capture_ns;
+
+    for (i, s) in samples.iter().enumerate() {
+        let bin = if stamped {
+            if s.t_capture_ns < t_start {
+                continue;
+            }
+            ((s.t_capture_ns - t_start) / bin_ns.max(1)).min(STRIP_COLUMNS as u64 - 1)
+        } else {
+            // An unstamped capture: spread the tail of it evenly across the
+            // window rather than piling every sample into one column.
+            let first = samples.len().saturating_sub(STRIP_COLUMNS * 4);
+            if i < first {
+                continue;
+            }
+            let k = (i - first) as f64 / (samples.len() - first).max(1) as f64;
+            ((k * STRIP_COLUMNS as f64) as u64).min(STRIP_COLUMNS as u64 - 1)
+        };
+        dec.advance_to(bin);
+        dec.accumulate(s);
+    }
+    dec.advance_to(STRIP_COLUMNS as u64);
+    dec.frame
 }
 
 // ============================================================================
@@ -921,6 +967,59 @@ mod tests {
     }
 
     // ---- the thread -------------------------------------------------------
+
+    // ---- offline folding --------------------------------------------------
+
+    #[test]
+    fn folding_a_capture_reproduces_the_live_chart_shape() {
+        // 8 s at 100 Hz: full throttle, then hard on the brakes.
+        let hz = 100u64;
+        let mut v = Vec::new();
+        for i in 0..800u64 {
+            let t = i * 1_000_000_000 / hz;
+            let braking = i > 600;
+            v.push(sample(t, if braking { 0.0 } else { 1.0 }, if braking { 0.9 } else { 0.0 }));
+        }
+        let f = strip_from_samples(&v, 8.0);
+        assert_eq!(f.len(), STRIP_COLUMNS, "the window should be full");
+        assert_eq!(f.samples, 800);
+        let first = f.column(0).unwrap();
+        let last = f.column(f.len() - 1).unwrap();
+        assert!(first.thr_max > 0.9 && first.brk_max < 0.01, "start is not on the throttle");
+        assert!(last.brk_max > 0.8 && last.thr_max < 0.01, "end is not on the brakes");
+    }
+
+    #[test]
+    fn folding_keeps_only_the_tail_of_a_long_capture() {
+        let hz = 100u64;
+        let mut v = Vec::new();
+        for i in 0..6000u64 {
+            let t = i * 1_000_000_000 / hz;
+            // Only the last 4 s have any brake.
+            v.push(sample(t, 1.0, if i > 5600 { 0.7 } else { 0.0 }));
+        }
+        let f = strip_from_samples(&v, 8.0);
+        // 8 s at 100 Hz, inclusive of both endpoints.
+        assert_eq!(f.samples, 801, "kept more than the 8 s window");
+        assert!(f.columns().any(|c| c.brk_max > 0.6));
+    }
+
+    #[test]
+    fn folding_an_unstamped_capture_still_spreads_across_the_window() {
+        let v: Vec<_> = (0..1000).map(|i| sample(0, i as f32 / 1000.0, 0.0)).collect();
+        let f = strip_from_samples(&v, 8.0);
+        assert!(f.len() > STRIP_COLUMNS / 2, "only {} columns filled", f.len());
+        let first = f.column(0).unwrap();
+        let last = f.column(f.len() - 1).unwrap();
+        assert!(last.thr_max > first.thr_max, "the ramp was flattened");
+    }
+
+    #[test]
+    fn folding_an_empty_slice_is_an_empty_chart() {
+        let f = strip_from_samples(&[], 8.0);
+        assert!(f.is_empty());
+        assert_eq!(f.window_s, 8.0);
+    }
 
     #[test]
     fn the_logger_records_only_between_start_and_end() {
