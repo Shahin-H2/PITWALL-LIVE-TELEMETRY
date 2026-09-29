@@ -14,6 +14,10 @@ tools/fake_sim.py           synthetic packet source, all three protocols
 legacy/                     the original C and Python prototypes (engine.c bug fixed)
 ```
 
+<img src="welcomeScreen.png" width="58%"> 
+<img src="liveTelemtry.png" width="40%"> 
+<img src="sessionDebrief.png" width="40%"> 
+
 ## Quick start
 
 You don't need a simulator to see it run.
