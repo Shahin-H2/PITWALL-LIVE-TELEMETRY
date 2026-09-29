@@ -31,7 +31,7 @@ cargo run --release -p pitwall
 `--sim f1` and `--sim ac` speak the other two protocols. The app auto-detects
 which; you never tell it.
 
-<img src="liveTelemetry.png" width="90%"> 
+<img src="liveTelemetry.png" width="100%"> 
 
 ## Against a real sim
 
