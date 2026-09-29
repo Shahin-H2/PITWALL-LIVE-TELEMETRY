@@ -68,8 +68,8 @@ UDP socket
      ├─ fold into the strip decimator (min/max per time bin)
      │      └──► TripleBuffer<StripFrame> ─────────► render: rolling pedal chart
      └─ on "end session", hand the log over ───────► session-debrief thread
-                                                            │
-                                                     Debrief ──► the debrief window
+                                                             │
+                                                      Debrief ──► the debrief window
 ```
 
 Per frame the renderer performs **two atomic swaps and one `try_lock`**. None
